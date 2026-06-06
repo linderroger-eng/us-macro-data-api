@@ -33,7 +33,7 @@ app.add_middleware(
 )
 
 # ── constants ─────────────────────────────────────────────────────────────
-BLS_BASE       = "https://api.bls.gov/publicAPI/v2/timeseries/data/"
+BLS_BASE       = "https://api.bls.gov/publicAPI/v1/timeseries/data/"
 WORLDBANK_BASE = "https://api.worldbank.org/v2"
 
 # BLS series IDs
