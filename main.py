@@ -1,7 +1,7 @@
 """
 US Macro Data API — Real-time US economic indicators
-Sources: Bureau of Labor Statistics (BLS) + World Bank
-Endpoints: /gdp, /inflation, /unemployment, /jobs, /indicators, /country/{code}/gdp
+Source: World Bank (all endpoints)
+Endpoints: /gdp, /inflation, /unemployment, /labor, /indicators, /country/{code}/gdp
 """
 import time
 import httpx
@@ -16,10 +16,10 @@ app = FastAPI(
     title="US Macro Data API",
     description=(
         "Real-time US macroeconomic indicators: GDP, CPI inflation, unemployment, "
-        "and nonfarm payroll employment. Data sourced from the Bureau of Labor "
-        "Statistics (BLS) and World Bank — both public domain."
+        "and labor force participation. All data sourced from the World Bank — "
+        "public domain, no API key required."
     ),
-    version="1.0.0",
+    version="2.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -33,69 +33,18 @@ app.add_middleware(
 )
 
 # ── constants ─────────────────────────────────────────────────────────────
-BLS_BASE       = "https://api.bls.gov/publicAPI/v1/timeseries/data/"
 WORLDBANK_BASE = "https://api.worldbank.org/v2"
 
-# BLS series IDs
-SERIES_CPI         = "CUUR0000SA0"       # CPI All Urban Consumers
-SERIES_UNEMPLOYMENT = "LNS14000000"      # Unemployment rate
-SERIES_PAYROLL      = "CES0000000001"    # Total nonfarm payroll
-SERIES_SPENDING     = "CXU900000LB1203M" # Consumer spending
-
-CURRENT_YEAR = str(datetime.now().year)
-DEFAULT_START = str(datetime.now().year - 2)
+# World Bank indicator IDs
+WB_GDP_USD         = "NY.GDP.MKTP.CD"    # GDP (current US$)
+WB_GDP_GROWTH      = "NY.GDP.MKTP.KD.ZG" # GDP growth (annual %)
+WB_INFLATION       = "FP.CPI.TOTL.ZG"   # CPI inflation (annual %)
+WB_UNEMPLOYMENT    = "SL.UEM.TOTL.ZS"   # Unemployment (% of labor force)
+WB_LABOR_FORCE     = "SL.TLF.CACT.ZS"   # Labor force participation (% ages 15+)
+WB_EMPLOYMENT_POP  = "SL.EMP.TOTL.SP.ZS" # Employment to population ratio (%)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────
-
-def _normalize_bls(raw_data: list) -> list:
-    """Flatten BLS nested {year, period, periodName, value} → {year, period, period_name, value}."""
-    results = []
-    for item in raw_data:
-        try:
-            results.append({
-                "year": item.get("year"),
-                "period": item.get("period"),
-                "period_name": item.get("periodName"),
-                "value": float(item.get("value", 0)),
-            })
-        except (ValueError, TypeError):
-            results.append({
-                "year": item.get("year"),
-                "period": item.get("period"),
-                "period_name": item.get("periodName"),
-                "value": None,
-            })
-    return results
-
-
-async def _bls_fetch(series_id: str, year_start: str, year_end: str) -> list:
-    """GET BLS v1 API (no key required) and return normalized data list."""
-    url = f"{BLS_BASE}{series_id}"
-    async with httpx.AsyncClient(timeout=20) as client:
-        resp = await client.get(url)
-    if resp.status_code != 200:
-        raise HTTPException(status_code=502, detail=f"BLS API error: HTTP {resp.status_code}")
-
-    body = resp.json()
-    if body.get("status") not in ("REQUEST_SUCCEEDED", "REQUEST_NOT_PROCESSED"):
-        if body.get("status") == "REQUEST_FAILED":
-            msgs = body.get("message", [])
-            raise HTTPException(status_code=502, detail=f"BLS request failed: {msgs}")
-
-    series_list = body.get("Results", {}).get("series", [])
-    if not series_list:
-        raise HTTPException(status_code=404, detail=f"No BLS data found for series {series_id}")
-
-    raw = series_list[0].get("data", [])
-    # v1 GET returns latest ~3 years; filter to requested range if needed
-    if year_start or year_end:
-        raw = [
-            item for item in raw
-            if (year_start <= item.get("year", "") <= year_end)
-        ]
-    return _normalize_bls(raw)
-
 
 async def _worldbank_fetch(country: str, indicator: str, limit: int = 5) -> list:
     """GET World Bank indicator data and return clean list."""
@@ -124,7 +73,6 @@ async def _worldbank_fetch(country: str, indicator: str, limit: int = 5) -> list
             "country_code": item.get("countryiso3code"),
             "indicator": item.get("indicator", {}).get("id"),
             "indicator_name": item.get("indicator", {}).get("value"),
-            "unit": "USD",
         })
     return results
 
@@ -151,15 +99,15 @@ async def root():
     """API info and available endpoints."""
     return {
         "name": "US Macro Data API",
-        "version": "1.0.0",
-        "description": "Real-time US macroeconomic indicators from BLS and World Bank",
-        "sources": ["Bureau of Labor Statistics (BLS)", "World Bank"],
+        "version": "2.0.0",
+        "description": "Real-time US macroeconomic indicators. All data sourced from the World Bank.",
+        "sources": ["World Bank"],
         "endpoints": {
-            "GET /gdp":                   "US GDP from World Bank",
-            "GET /inflation":             "US CPI (inflation) from BLS",
-            "GET /unemployment":          "US unemployment rate from BLS",
-            "GET /jobs":                  "US nonfarm payroll from BLS",
-            "GET /indicators":            "Combined macro snapshot",
+            "GET /gdp":                   "US GDP (current USD) from World Bank",
+            "GET /inflation":             "US CPI inflation (annual %) from World Bank",
+            "GET /unemployment":          "US unemployment rate from World Bank",
+            "GET /labor":                 "US labor force participation + employment ratio from World Bank",
+            "GET /indicators":            "Combined macro snapshot (all 4 series)",
             "GET /country/{code}/gdp":    "GDP for any World Bank country code",
             "GET /health":                "Health check",
             "GET /ping":                  "Ping",
@@ -183,9 +131,9 @@ async def get_gdp(
     US GDP (or any country) from the World Bank.
     Indicator: NY.GDP.MKTP.CD (current USD).
     """
-    data = await _worldbank_fetch(country.upper(), "NY.GDP.MKTP.CD", limit)
+    data = await _worldbank_fetch(country.upper(), WB_GDP_USD, limit)
     return {
-        "series": "NY.GDP.MKTP.CD",
+        "series": WB_GDP_USD,
         "series_name": "GDP (current US$)",
         "country": country.upper(),
         "source": "World Bank",
@@ -196,21 +144,20 @@ async def get_gdp(
 
 @app.get("/inflation", tags=["Economic Indicators"])
 async def get_inflation(
-    year_start: str = Query(default=DEFAULT_START, description="Start year (e.g. 2022)"),
-    year_end: str = Query(default=CURRENT_YEAR, description="End year (e.g. 2025)"),
+    country: str = Query(default="US", description="ISO country code (default: US)"),
+    limit: int = Query(default=5, ge=1, le=20, description="Number of recent years to return"),
 ):
     """
-    US CPI (Consumer Price Index) — inflation proxy.
-    BLS series: CUUR0000SA0 (CPI-U All Urban Consumers, All Items, Not Seasonally Adjusted).
+    CPI inflation (annual % change) from the World Bank.
+    Indicator: FP.CPI.TOTL.ZG.
     """
-    data = await _bls_fetch(SERIES_CPI, year_start, year_end)
+    data = await _worldbank_fetch(country.upper(), WB_INFLATION, limit)
     return {
-        "series_id": SERIES_CPI,
-        "series_name": "CPI-U All Urban Consumers",
-        "unit": "Index (1982-84=100)",
-        "source": "Bureau of Labor Statistics",
-        "year_start": year_start,
-        "year_end": year_end,
+        "series": WB_INFLATION,
+        "series_name": "Inflation, consumer prices (annual %)",
+        "unit": "Annual % change",
+        "country": country.upper(),
+        "source": "World Bank",
         "count": len(data),
         "data": data,
     }
@@ -218,71 +165,84 @@ async def get_inflation(
 
 @app.get("/unemployment", tags=["Economic Indicators"])
 async def get_unemployment(
-    year_start: str = Query(default=DEFAULT_START, description="Start year (e.g. 2022)"),
-    year_end: str = Query(default=CURRENT_YEAR, description="End year (e.g. 2025)"),
+    country: str = Query(default="US", description="ISO country code (default: US)"),
+    limit: int = Query(default=5, ge=1, le=20, description="Number of recent years to return"),
 ):
     """
-    US unemployment rate (monthly, seasonally adjusted).
-    BLS series: LNS14000000.
+    Unemployment rate (% of labor force) from the World Bank.
+    Indicator: SL.UEM.TOTL.ZS.
     """
-    data = await _bls_fetch(SERIES_UNEMPLOYMENT, year_start, year_end)
+    data = await _worldbank_fetch(country.upper(), WB_UNEMPLOYMENT, limit)
     return {
-        "series_id": SERIES_UNEMPLOYMENT,
-        "series_name": "Unemployment Rate",
-        "unit": "Percent",
-        "seasonal_adjustment": "Seasonally Adjusted",
-        "source": "Bureau of Labor Statistics",
-        "year_start": year_start,
-        "year_end": year_end,
+        "series": WB_UNEMPLOYMENT,
+        "series_name": "Unemployment, total (% of total labor force)",
+        "unit": "% of labor force",
+        "country": country.upper(),
+        "source": "World Bank",
         "count": len(data),
         "data": data,
     }
 
 
-@app.get("/jobs", tags=["Economic Indicators"])
-async def get_jobs(
-    year_start: str = Query(default=DEFAULT_START, description="Start year (e.g. 2022)"),
-    year_end: str = Query(default=CURRENT_YEAR, description="End year (e.g. 2025)"),
+@app.get("/labor", tags=["Economic Indicators"])
+async def get_labor(
+    country: str = Query(default="US", description="ISO country code (default: US)"),
+    limit: int = Query(default=5, ge=1, le=20, description="Number of recent years to return"),
 ):
     """
-    US Total Nonfarm Payroll Employment (monthly, seasonally adjusted).
-    BLS series: CES0000000001.
+    Labor market indicators from the World Bank:
+    - Labor force participation rate (SL.TLF.CACT.ZS, % of population ages 15+)
+    - Employment to population ratio (SL.EMP.TOTL.SP.ZS, % of population ages 15+)
     """
-    data = await _bls_fetch(SERIES_PAYROLL, year_start, year_end)
+    lfp_task = _worldbank_fetch(country.upper(), WB_LABOR_FORCE, limit)
+    emp_task = _worldbank_fetch(country.upper(), WB_EMPLOYMENT_POP, limit)
+
+    lfp_data, emp_data = await asyncio.gather(lfp_task, emp_task, return_exceptions=True)
+
+    def _safe(result):
+        if isinstance(result, Exception):
+            return {"error": str(result), "data": []}
+        return {"count": len(result), "data": result}
+
     return {
-        "series_id": SERIES_PAYROLL,
-        "series_name": "Total Nonfarm Payroll Employment",
-        "unit": "Thousands of persons",
-        "seasonal_adjustment": "Seasonally Adjusted",
-        "source": "Bureau of Labor Statistics",
-        "year_start": year_start,
-        "year_end": year_end,
-        "count": len(data),
-        "data": data,
+        "country": country.upper(),
+        "source": "World Bank",
+        "labor_force_participation": {
+            "series": WB_LABOR_FORCE,
+            "series_name": "Labor force participation rate, total (% of total population ages 15+)",
+            "unit": "% of population ages 15+",
+            **_safe(lfp_data),
+        },
+        "employment_to_population": {
+            "series": WB_EMPLOYMENT_POP,
+            "series_name": "Employment to population ratio, 15+, total (%) (modeled ILO estimate)",
+            "unit": "% of population ages 15+",
+            **_safe(emp_data),
+        },
     }
 
 
 @app.get("/indicators", tags=["Economic Indicators"])
-async def get_indicators():
+async def get_indicators(
+    country: str = Query(default="US", description="ISO country code (default: US)"),
+):
     """
-    Combined macro snapshot — latest GDP, unemployment rate, CPI, and nonfarm payroll.
-    Fetches all four series concurrently for fast response.
+    Combined macro snapshot — latest GDP, inflation, unemployment, and labor force participation.
+    Fetches all four World Bank series concurrently for fast response.
     """
-    current_year = str(datetime.now().year)
-    prev_year = str(datetime.now().year - 1)
+    cc = country.upper()
 
-    # Fetch all in parallel
-    gdp_task          = _worldbank_fetch("US", "NY.GDP.MKTP.CD", 1)
-    unemployment_task = _bls_fetch(SERIES_UNEMPLOYMENT, prev_year, current_year)
-    cpi_task          = _bls_fetch(SERIES_CPI, prev_year, current_year)
-    payroll_task      = _bls_fetch(SERIES_PAYROLL, prev_year, current_year)
+    gdp_task          = _worldbank_fetch(cc, WB_GDP_USD, 1)
+    gdp_growth_task   = _worldbank_fetch(cc, WB_GDP_GROWTH, 1)
+    inflation_task    = _worldbank_fetch(cc, WB_INFLATION, 1)
+    unemployment_task = _worldbank_fetch(cc, WB_UNEMPLOYMENT, 1)
 
-    gdp_data, unemployment_data, cpi_data, payroll_data = await asyncio.gather(
-        gdp_task, unemployment_task, cpi_task, payroll_task,
+    gdp_data, gdp_growth_data, inflation_data, unemployment_data = await asyncio.gather(
+        gdp_task, gdp_growth_task, inflation_task, unemployment_task,
         return_exceptions=True,
     )
 
-    def _safe_latest(result, fallback_key="value"):
+    def _safe_latest(result):
         if isinstance(result, Exception):
             return {"error": str(result)}
         if result:
@@ -291,30 +251,31 @@ async def get_indicators():
 
     return {
         "snapshot_at": datetime.now(timezone.utc).isoformat(),
-        "source": "BLS + World Bank",
+        "country": cc,
+        "source": "World Bank",
         "gdp": {
-            "series": "NY.GDP.MKTP.CD",
+            "series": WB_GDP_USD,
             "series_name": "GDP (current US$)",
             "unit": "USD",
             "latest": _safe_latest(gdp_data),
         },
+        "gdp_growth": {
+            "series": WB_GDP_GROWTH,
+            "series_name": "GDP growth (annual %)",
+            "unit": "Annual %",
+            "latest": _safe_latest(gdp_growth_data),
+        },
+        "inflation": {
+            "series": WB_INFLATION,
+            "series_name": "Inflation, consumer prices (annual %)",
+            "unit": "Annual %",
+            "latest": _safe_latest(inflation_data),
+        },
         "unemployment": {
-            "series_id": SERIES_UNEMPLOYMENT,
-            "series_name": "Unemployment Rate",
-            "unit": "Percent",
+            "series": WB_UNEMPLOYMENT,
+            "series_name": "Unemployment, total (% of total labor force)",
+            "unit": "% of labor force",
             "latest": _safe_latest(unemployment_data),
-        },
-        "cpi": {
-            "series_id": SERIES_CPI,
-            "series_name": "CPI-U All Urban Consumers",
-            "unit": "Index (1982-84=100)",
-            "latest": _safe_latest(cpi_data),
-        },
-        "payroll": {
-            "series_id": SERIES_PAYROLL,
-            "series_name": "Total Nonfarm Payroll Employment",
-            "unit": "Thousands of persons",
-            "latest": _safe_latest(payroll_data),
         },
     }
 
@@ -328,7 +289,7 @@ async def get_country_gdp(
     GDP (current USD) for any World Bank country code.
     Examples: US, GB, DE, JP, CN, IN, BR, CA, AU, FR.
     """
-    data = await _worldbank_fetch(country_code.upper(), "NY.GDP.MKTP.CD", limit)
+    data = await _worldbank_fetch(country_code.upper(), WB_GDP_USD, limit)
     if not data:
         raise HTTPException(
             status_code=404,
@@ -336,7 +297,7 @@ async def get_country_gdp(
                    "Check the World Bank country code (ISO2 or ISO3).",
         )
     return {
-        "series": "NY.GDP.MKTP.CD",
+        "series": WB_GDP_USD,
         "series_name": "GDP (current US$)",
         "country_code": country_code.upper(),
         "source": "World Bank",
