@@ -70,18 +70,10 @@ def _normalize_bls(raw_data: list) -> list:
 
 
 async def _bls_fetch(series_id: str, year_start: str, year_end: str) -> list:
-    """POST to BLS API and return normalized data list."""
-    payload = {
-        "seriesid": [series_id],
-        "startyear": year_start,
-        "endyear": year_end,
-    }
+    """GET BLS v1 API (no key required) and return normalized data list."""
+    url = f"{BLS_BASE}{series_id}"
     async with httpx.AsyncClient(timeout=20) as client:
-        resp = await client.post(
-            BLS_BASE,
-            json=payload,
-            headers={"Content-Type": "application/json"},
-        )
+        resp = await client.get(url)
     if resp.status_code != 200:
         raise HTTPException(status_code=502, detail=f"BLS API error: HTTP {resp.status_code}")
 
@@ -96,6 +88,12 @@ async def _bls_fetch(series_id: str, year_start: str, year_end: str) -> list:
         raise HTTPException(status_code=404, detail=f"No BLS data found for series {series_id}")
 
     raw = series_list[0].get("data", [])
+    # v1 GET returns latest ~3 years; filter to requested range if needed
+    if year_start or year_end:
+        raw = [
+            item for item in raw
+            if (year_start <= item.get("year", "") <= year_end)
+        ]
     return _normalize_bls(raw)
 
 
